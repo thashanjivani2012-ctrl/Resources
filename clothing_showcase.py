@@ -184,6 +184,14 @@ def _guild(interaction: discord.Interaction) -> discord.Guild:
 clothing_group = app_commands.Group(name="clothing", description="Create clothing showcases")
 
 
+def _layout_value(choice: Optional[app_commands.Choice[str]]) -> str:
+    return choice.value if choice else "portrait"
+
+
+def _layout_name(choice: Optional[app_commands.Choice[str]]) -> str:
+    return choice.name if choice else "Portrait"
+
+
 @clothing_group.command(name="full", description="Create a showcase with 3 shirts and 3 pant options")
 @app_commands.describe(
     shirt1="First shirt template image",
@@ -207,7 +215,7 @@ async def showcase_full(
     shirt3: discord.Attachment,
     pants2: discord.Attachment,
     pants3: discord.Attachment,
-    type: app_commands.Choice[str] = "portrait",
+    type: Optional[app_commands.Choice[str]] = None,
 ):
     await interaction.response.defer()
     try:
@@ -215,12 +223,12 @@ async def showcase_full(
         images = [_open_image(await _attachment_bytes(item)) for item in (shirt1, pants1, shirt2, pants2, shirt3, pants3)]
         pairs = [(images[index], images[index + 1]) for index in range(0, len(images), 2)]
         bg = await _background_for(guild, None)
-        output = _compose_pairs(pairs, type.value, "ILE PACKAGES", bg)
+        output = _compose_pairs(pairs, _layout_value(type), "ILE PACKAGES", bg)
         buffer = io.BytesIO()
         output.convert("RGB").save(buffer, format="PNG", optimize=True)
         buffer.seek(0)
         await interaction.followup.send(
-            content=f"**ILE PACKAGES** — {type.name} layout",
+            content=f"**ILE PACKAGES** — {_layout_name(type)} layout",
             file=discord.File(buffer, filename="clothing-showcase.png"),
         )
     except (OSError, ValueError, RuntimeError) as error:
@@ -243,19 +251,19 @@ async def showcase_single(
     interaction: discord.Interaction,
     shirt: discord.Attachment,
     pants: discord.Attachment,
-    type: app_commands.Choice[str] = "portrait",
+    type: Optional[app_commands.Choice[str]] = None,
 ):
     await interaction.response.defer()
     try:
         guild = _guild(interaction)
         images = [_open_image(await _attachment_bytes(item)) for item in (shirt, pants)]
         bg = await _background_for(guild, None)
-        output = _compose_pairs([tuple(images)], type.value, "ILE CUSTOMS", bg)
+        output = _compose_pairs([tuple(images)], _layout_value(type), "ILE CUSTOMS", bg)
         buffer = io.BytesIO()
         output.convert("RGB").save(buffer, format="PNG", optimize=True)
         buffer.seek(0)
         await interaction.followup.send(
-            content=f"**ILE CUSTOMS** — {type.name} layout",
+            content=f"**ILE CUSTOMS** — {_layout_name(type)} layout",
             file=discord.File(buffer, filename="clothing-showcase.png"),
         )
     except (OSError, ValueError, RuntimeError) as error:
