@@ -18,9 +18,9 @@ import discord
 from discord import app_commands
 
 try:
-    from PIL import Image, ImageDraw, ImageFont, ImageOps
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 except ImportError:  # pragma: no cover - reported when the command is used
-    Image = ImageDraw = ImageFont = ImageOps = None
+    Image = ImageDraw = ImageFilter = ImageFont = ImageOps = None
 
 SETTINGS_FILE = None
 ASSETS_DIR = None
@@ -68,7 +68,10 @@ def _font(size: int, bold: bool = False):
     for path in candidates:
         if path.exists():
             return ImageFont.truetype(str(path), size)
-    return ImageFont.load_default()
+    try:
+        return ImageFont.load_default(size)
+    except TypeError:  # Pillow < 10.1
+        return ImageFont.load_default()
 
 
 async def _attachment_bytes(attachment: discord.Attachment) -> bytes:
@@ -103,18 +106,60 @@ def _fit(image, box: tuple[int, int, int, int]):
 
 
 def _background_canvas(background, size: tuple[int, int]):
-    width, height = size
-    fitted, position = _fit(background, (0, 0, width, height))
-    canvas = Image.new("RGBA", size, (245, 203, 218, 255))
-    canvas.alpha_composite(fitted, position)
-    return canvas
+    return ImageOps.fit(background, size, method=Image.LANCZOS).convert("RGBA")
+
+
+OUTLINE = 4
+GAP = 28
 
 
 def _draw_image(draw, canvas, image, box):
+    """Place a template in box with a white outline that hugs its opaque pixels."""
     left, top, right, bottom = box
-    draw.rounded_rectangle(box, radius=12, fill=(255, 255, 255, 225), outline="white", width=4)
-    fitted, position = _fit(image, (left + 8, top + 8, right - 8, bottom - 8))
+    pad = OUTLINE + 2
+    fitted, position = _fit(image, (left + pad, top + pad, right - pad, bottom - pad))
+    padded = Image.new("RGBA", (fitted.width + OUTLINE * 2, fitted.height + OUTLINE * 2), (0, 0, 0, 0))
+    padded.paste(fitted, (OUTLINE, OUTLINE))
+    halo = padded.getchannel("A").filter(ImageFilter.MaxFilter(OUTLINE * 2 + 1))
+    outline = Image.new("RGBA", padded.size, (255, 255, 255, 255))
+    outline.putalpha(halo)
+    canvas.alpha_composite(outline, (position[0] - OUTLINE, position[1] - OUTLINE))
     canvas.alpha_composite(fitted, position)
+
+
+def _title_layer(text: str, size: int):
+    """Bold, slanted white title with a soft shadow, like the ILE logo lettering."""
+    font = _font(size, bold=True)
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    box = probe.textbbox((0, 0), text, font=font, stroke_width=3)
+    w, h = box[2] - box[0] + 40, box[3] - box[1] + 40
+    layer = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    ImageDraw.Draw(layer).text((20 - box[0], 20 - box[1]), text, font=font, fill="white", stroke_width=3, stroke_fill="white")
+    shear = 0.22
+    layer = layer.transform(
+        (w + int(h * shear), h), Image.AFFINE, (1, shear, -h * shear, 0, 1, 0), resample=Image.BICUBIC
+    )
+    shadow = Image.new("RGBA", layer.size, (90, 48, 65, 255))
+    shadow.putalpha(layer.getchannel("A").point(lambda v: int(v * 0.55)))
+    shadow = shadow.filter(ImageFilter.GaussianBlur(4))
+    out = Image.new("RGBA", layer.size, (0, 0, 0, 0))
+    out.alpha_composite(shadow, (4, 6))
+    out.alpha_composite(layer)
+    return out
+
+
+def _paste_title(canvas, text: str, top: int, size: int):
+    layer = _title_layer(text, size)
+    canvas.alpha_composite(layer, ((canvas.width - layer.width) // 2, top))
+    return top + layer.height
+
+
+def _logo_layer(height: int):
+    path = Path(ASSETS_DIR) / "showcase" / "logo.png" if ASSETS_DIR else None
+    if path is not None and path.exists():
+        logo = Image.open(path).convert("RGBA")
+        return ImageOps.contain(logo, (height * 4, height))
+    return _title_layer("ILE", height)
 
 
 def _compose_pairs(pairs: list[tuple], orientation: str, title: str, background):
@@ -123,44 +168,44 @@ def _compose_pairs(pairs: list[tuple], orientation: str, title: str, background)
     if background is not None:
         canvas = _background_canvas(background, (width, height))
     draw = ImageDraw.Draw(canvas)
-    title_font = _font(58 if orientation == "landscape" else 52, bold=True)
-    title_text = title.strip()[:50] or "CLOTHING SHOWCASE"
-    title_box = draw.textbbox((0, 0), title_text, font=title_font)
-    title_x = (width - (title_box[2] - title_box[0])) // 2
-    draw.text((title_x, 28), title_text, fill="white", font=title_font, stroke_width=2, stroke_fill=(90, 48, 65))
 
-    margin = 52
-    content_top = 118
-    gap = 24
-    if len(pairs) == 1:
+    margin = 40
+    single = len(pairs) == 1
+    landscape = orientation == "landscape"
+    content_top = margin
+    # A single landscape layout has no title; the logo sits between the two templates.
+    if not (single and landscape):
+        content_top = _paste_title(canvas, title.strip()[:50] or "CLOTHING SHOWCASE", 22, 64 if landscape else 72) + 4
+
+    if single:
         shirt, pants = pairs[0]
-        if orientation == "landscape":
-            box_width = (width - (2 * margin) - gap) // 2
-            box = (margin, content_top, margin + box_width, height - margin)
-            _draw_image(draw, canvas, shirt, box)
-            box = (margin + box_width + gap, content_top, width - margin, height - margin)
-            _draw_image(draw, canvas, pants, box)
+        if landscape:
+            half = (width - 2 * margin - GAP) // 2
+            _draw_image(draw, canvas, shirt, (margin, margin, margin + half, height - margin))
+            _draw_image(draw, canvas, pants, (margin + half + GAP, margin, width - margin, height - margin))
+            logo = _logo_layer(110)
+            canvas.alpha_composite(logo, ((width - logo.width) // 2, height - margin - logo.height - 20))
         else:
-            box_height = (height - content_top - margin - gap) // 2
+            box_height = (height - content_top - margin - GAP) // 2
             _draw_image(draw, canvas, shirt, (margin, content_top, width - margin, content_top + box_height))
-            _draw_image(draw, canvas, pants, (margin, content_top + box_height + gap, width - margin, height - margin))
+            _draw_image(draw, canvas, pants, (margin, content_top + box_height + GAP, width - margin, height - margin))
         return canvas
 
-    if orientation == "landscape":
+    if landscape:
         columns = len(pairs)
-        box_width = (width - (2 * margin) - gap * (columns - 1)) // columns
-        box_height = (height - content_top - margin - gap) // 2
+        box_width = (width - 2 * margin - GAP * (columns - 1)) // columns
+        box_height = (height - content_top - margin - GAP) // 2
         for index, (shirt, pants) in enumerate(pairs):
-            x = margin + index * (box_width + gap)
+            x = margin + index * (box_width + GAP)
             _draw_image(draw, canvas, shirt, (x, content_top, x + box_width, content_top + box_height))
-            _draw_image(draw, canvas, pants, (x, content_top + box_height + gap, x + box_width, height - margin))
+            _draw_image(draw, canvas, pants, (x, content_top + box_height + GAP, x + box_width, height - margin))
     else:
-        box_height = (height - content_top - margin - gap * (len(pairs) - 1)) // len(pairs)
+        box_height = (height - content_top - margin - GAP * (len(pairs) - 1)) // len(pairs)
+        half = (width - 2 * margin - GAP) // 2
         for index, (shirt, pants) in enumerate(pairs):
-            y = content_top + index * (box_height + gap)
-            half = (width - (2 * margin) - gap) // 2
+            y = content_top + index * (box_height + GAP)
             _draw_image(draw, canvas, shirt, (margin, y, margin + half, y + box_height))
-            _draw_image(draw, canvas, pants, (margin + half + gap, y, width - margin, y + box_height))
+            _draw_image(draw, canvas, pants, (margin + half + GAP, y, width - margin, y + box_height))
     return canvas
 
 
