@@ -17,7 +17,9 @@ load_dotenv(APP_DIR / ".env", override=False)
 
 TOKEN = (os.getenv("DISCORD_TOKEN") or "").strip()
 GUILD_ID = (os.getenv("DISCORD_GUILD_ID") or "").strip()
-SETTINGS_FILE = APP_DIR / "showcase-settings.json"
+# Point SHOWCASE_DATA_DIR at a mounted volume so backgrounds survive redeploys.
+DATA_DIR = Path(os.getenv("SHOWCASE_DATA_DIR") or APP_DIR)
+SETTINGS_FILE = DATA_DIR / "showcase-settings.json"
 ASSETS_DIR = APP_DIR / "assets"
 LOG = logging.getLogger("resources-managament")
 
