@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import io
+import ipaddress
 import json
 import logging
+import socket
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Optional
@@ -27,6 +30,8 @@ SETTINGS_FILE = None
 ASSETS_DIR = None
 LOG = logging.getLogger("order-center.clothing-showcase")
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
+MAX_IMAGE_PIXELS = 40_000_000
+RENDER_LIMIT = asyncio.Semaphore(2)
 LANDSCAPE_SIZE = (1600, 900)
 PORTRAIT_SIZE = (1080, 1350)
 # Pillow's DecompressionBombError is not an OSError, so it is listed explicitly.
@@ -87,12 +92,33 @@ async def _attachment_bytes(attachment: discord.Attachment) -> bytes:
     return data
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError("Redirects are not allowed for background URLs.")
+
+
+def _validate_public_url(url: str):
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError("The background URL must use https:// and include a hostname.")
+    try:
+        addresses = socket.getaddrinfo(parsed.hostname, 443, type=socket.SOCK_STREAM)
+    except socket.gaierror as error:
+        raise ValueError("The background URL hostname could not be resolved.") from error
+    for address in addresses:
+        ip = ipaddress.ip_address(address[4][0])
+        if not ip.is_global:
+            raise ValueError("The background URL must point to a public host.")
+
+
 def _url_bytes(url: str) -> bytes:
+    _validate_public_url(url)
     request = urllib.request.Request(url, headers={"User-Agent": "Resources-Managament-Showcase/1.0"})
-    with urllib.request.urlopen(request, timeout=15) as response:
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    with opener.open(request, timeout=15) as response:
         data = response.read(MAX_IMAGE_BYTES + 1)
     if len(data) > MAX_IMAGE_BYTES:
-        raise ValueError("The background URL points to an image larger than 12 MB.")
+        raise ValueError("The background image is larger than 12 MB.")
     return data
 
 
@@ -100,6 +126,8 @@ def _open_image(data: bytes):
     if Image is None:
         raise RuntimeError("Pillow is not installed. Run `pip install -r requirements.txt`.")
     with Image.open(io.BytesIO(data)) as image:
+        if image.width * image.height > MAX_IMAGE_PIXELS:
+            raise ValueError("Each image must be 40 megapixels or smaller.")
         return image.convert("RGBA")
 
 
@@ -281,14 +309,15 @@ async def showcase_full(
         guild = _guild(interaction)
         uploads = [await _attachment_bytes(item) for item in (shirt1, pants1, shirt2, pants2, shirt3, pants3)]
         background = await _background_bytes(guild)
-        buffer = await asyncio.to_thread(_render_showcase, uploads, _layout_value(type), "", background)
+        async with RENDER_LIMIT:
+            buffer = await asyncio.to_thread(_render_showcase, uploads, _layout_value(type), "", background)
         await interaction.followup.send(
             content=f"{_layout_name(type)} layout",
             file=discord.File(buffer, filename="clothing-showcase.png"),
         )
     except IMAGE_ERRORS as error:
         LOG.warning("Showcase composition failed: %s", error)
-        await interaction.followup.send(f"I couldn't create the showcase: {error}")
+        await interaction.followup.send("I couldn't create the showcase. Please use valid images under 12 MB and try again.")
 
 
 @clothing_group.command(name="single", description="Create a showcase with one shirt and one pant option")
@@ -313,14 +342,15 @@ async def showcase_single(
         guild = _guild(interaction)
         uploads = [await _attachment_bytes(item) for item in (shirt, pants)]
         background = await _background_bytes(guild)
-        buffer = await asyncio.to_thread(_render_showcase, uploads, _layout_value(type), "", background)
+        async with RENDER_LIMIT:
+            buffer = await asyncio.to_thread(_render_showcase, uploads, _layout_value(type), "", background)
         await interaction.followup.send(
             content=f"{_layout_name(type)} layout",
             file=discord.File(buffer, filename="clothing-showcase.png"),
         )
     except IMAGE_ERRORS as error:
         LOG.warning("Single showcase composition failed: %s", error)
-        await interaction.followup.send(f"I couldn't create the showcase: {error}")
+        await interaction.followup.send("I couldn't create the showcase. Please use valid images under 12 MB and try again.")
 
 
 @app_commands.command(name="background", description="Set or clear the default clothing showcase background")
@@ -360,9 +390,9 @@ async def showcase_background(
         path = directory / f"background-{guild.id}.png"
         path.write_bytes(data)
         _save_guild_settings(guild, background_path=str(path))
-    except (*IMAGE_ERRORS, UnicodeError, urllib.error.URLError) as error:
+    except (OSError, ValueError, RuntimeError, UnicodeError, urllib.error.URLError) as error:
         LOG.warning("Could not save showcase background: %s", error)
-        await interaction.followup.send(f"I couldn't save that background: {error}", ephemeral=True)
+        await interaction.followup.send("I couldn't save that background. Use a valid image under 12 MB and try again.", ephemeral=True)
         return
     await interaction.followup.send("The default clothing showcase background was updated.", ephemeral=True)
 
