@@ -6,6 +6,7 @@ the feature can also be reused by the standalone launcher in Resources Managamen
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -28,6 +29,9 @@ LOG = logging.getLogger("order-center.clothing-showcase")
 MAX_IMAGE_BYTES = 12 * 1024 * 1024
 LANDSCAPE_SIZE = (1600, 900)
 PORTRAIT_SIZE = (1080, 1350)
+# Pillow's DecompressionBombError is not an OSError, so it is listed explicitly.
+IMAGE_ERRORS = (OSError, ValueError, RuntimeError) + ((Image.DecompressionBombError,) if Image else ())
+
 
 
 def setup(bot, settings_file: Path, assets_dir: Path):
@@ -128,7 +132,7 @@ def _draw_image(draw, canvas, image, box):
 
 
 def _title_layer(text: str, size: int):
-    """Bold, slanted white title with a soft shadow, like the ILE logo lettering."""
+    """Bold, slanted white title with a soft shadow."""
     font = _font(size, bold=True)
     probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
     box = probe.textbbox((0, 0), text, font=font, stroke_width=3)
@@ -154,13 +158,6 @@ def _paste_title(canvas, text: str, top: int, size: int):
     return top + layer.height
 
 
-def _logo_layer(height: int):
-    path = Path(ASSETS_DIR) / "showcase" / "logo.png" if ASSETS_DIR else None
-    if path is not None and path.exists():
-        logo = Image.open(path).convert("RGBA")
-        return ImageOps.contain(logo, (height * 4, height))
-    return _title_layer("ILE", height)
-
 
 def _compose_pairs(pairs: list[tuple], orientation: str, title: str, background):
     width, height = LANDSCAPE_SIZE if orientation == "landscape" else PORTRAIT_SIZE
@@ -173,9 +170,8 @@ def _compose_pairs(pairs: list[tuple], orientation: str, title: str, background)
     single = len(pairs) == 1
     landscape = orientation == "landscape"
     content_top = margin
-    # A single landscape layout has no title; the logo sits between the two templates.
-    if not (single and landscape):
-        content_top = _paste_title(canvas, title.strip()[:50] or "CLOTHING SHOWCASE", 22, 64 if landscape else 72) + 4
+    if title.strip() and not (single and landscape):
+        content_top = _paste_title(canvas, title.strip()[:50], 22, 64 if landscape else 72) + 4
 
     if single:
         shirt, pants = pairs[0]
@@ -183,8 +179,6 @@ def _compose_pairs(pairs: list[tuple], orientation: str, title: str, background)
             half = (width - 2 * margin - GAP) // 2
             _draw_image(draw, canvas, shirt, (margin, margin, margin + half, height - margin))
             _draw_image(draw, canvas, pants, (margin + half + GAP, margin, width - margin, height - margin))
-            logo = _logo_layer(110)
-            canvas.alpha_composite(logo, ((width - logo.width) // 2, height - margin - logo.height - 20))
         else:
             box_height = (height - content_top - margin - GAP) // 2
             _draw_image(draw, canvas, shirt, (margin, content_top, width - margin, content_top + box_height))
@@ -209,15 +203,35 @@ def _compose_pairs(pairs: list[tuple], orientation: str, title: str, background)
     return canvas
 
 
-async def _background_for(guild: discord.Guild, override: Optional[discord.Attachment]):
-    if override is not None:
-        return _open_image(await _attachment_bytes(override))
+async def _background_bytes(guild: discord.Guild) -> Optional[bytes]:
     saved = _settings(guild).get("background_path")
     if saved:
         path = Path(saved)
         if path.exists():
-            return _open_image(path.read_bytes())
+            return path.read_bytes()
     return None
+
+
+def _render_showcase(uploads: list[bytes], orientation: str, title: str, background: Optional[bytes]) -> io.BytesIO:
+    """CPU-heavy image work, run off the event loop so the gateway heartbeat is not blocked."""
+    images = [_open_image(data) for data in uploads]
+    pairs = [(images[index], images[index + 1]) for index in range(0, len(images), 2)]
+    output = _compose_pairs(pairs, orientation, title, _open_image(background) if background else None)
+    buffer = io.BytesIO()
+    output.convert("RGB").save(buffer, format="PNG", optimize=True)
+    buffer.seek(0)
+    return buffer
+
+
+def _save_guild_settings(guild: discord.Guild, **changes):
+    data = _read_settings()
+    settings = data.setdefault(str(guild.id), {})
+    for key, value in changes.items():
+        if value is None:
+            settings.pop(key, None)
+        else:
+            settings[key] = value
+    _write_settings(data)
 
 
 def _guild(interaction: discord.Interaction) -> discord.Guild:
@@ -262,23 +276,19 @@ async def showcase_full(
     pants3: discord.Attachment,
     type: Optional[app_commands.Choice[str]] = None,
 ):
-    await interaction.response.defer()
+    await interaction.response.defer(thinking=True)
     try:
         guild = _guild(interaction)
-        images = [_open_image(await _attachment_bytes(item)) for item in (shirt1, pants1, shirt2, pants2, shirt3, pants3)]
-        pairs = [(images[index], images[index + 1]) for index in range(0, len(images), 2)]
-        bg = await _background_for(guild, None)
-        output = _compose_pairs(pairs, _layout_value(type), "ILE PACKAGES", bg)
-        buffer = io.BytesIO()
-        output.convert("RGB").save(buffer, format="PNG", optimize=True)
-        buffer.seek(0)
+        uploads = [await _attachment_bytes(item) for item in (shirt1, pants1, shirt2, pants2, shirt3, pants3)]
+        background = await _background_bytes(guild)
+        buffer = await asyncio.to_thread(_render_showcase, uploads, _layout_value(type), "", background)
         await interaction.followup.send(
-            content=f"**ILE PACKAGES** — {_layout_name(type)} layout",
+            content=f"{_layout_name(type)} layout",
             file=discord.File(buffer, filename="clothing-showcase.png"),
         )
-    except (OSError, ValueError, RuntimeError) as error:
+    except IMAGE_ERRORS as error:
         LOG.warning("Showcase composition failed: %s", error)
-        await interaction.followup.send(f"I couldn't create the showcase: {error}", ephemeral=True)
+        await interaction.followup.send(f"I couldn't create the showcase: {error}")
 
 
 @clothing_group.command(name="single", description="Create a showcase with one shirt and one pant option")
@@ -298,22 +308,19 @@ async def showcase_single(
     pants: discord.Attachment,
     type: Optional[app_commands.Choice[str]] = None,
 ):
-    await interaction.response.defer()
+    await interaction.response.defer(thinking=True)
     try:
         guild = _guild(interaction)
-        images = [_open_image(await _attachment_bytes(item)) for item in (shirt, pants)]
-        bg = await _background_for(guild, None)
-        output = _compose_pairs([tuple(images)], _layout_value(type), "ILE CUSTOMS", bg)
-        buffer = io.BytesIO()
-        output.convert("RGB").save(buffer, format="PNG", optimize=True)
-        buffer.seek(0)
+        uploads = [await _attachment_bytes(item) for item in (shirt, pants)]
+        background = await _background_bytes(guild)
+        buffer = await asyncio.to_thread(_render_showcase, uploads, _layout_value(type), "", background)
         await interaction.followup.send(
-            content=f"**ILE CUSTOMS** — {_layout_name(type)} layout",
+            content=f"{_layout_name(type)} layout",
             file=discord.File(buffer, filename="clothing-showcase.png"),
         )
-    except (OSError, ValueError, RuntimeError) as error:
+    except IMAGE_ERRORS as error:
         LOG.warning("Single showcase composition failed: %s", error)
-        await interaction.followup.send(f"I couldn't create the showcase: {error}", ephemeral=True)
+        await interaction.followup.send(f"I couldn't create the showcase: {error}")
 
 
 @app_commands.command(name="background", description="Set or clear the default clothing showcase background")
@@ -326,39 +333,42 @@ async def showcase_background(
     url: Optional[str] = None,
 ):
     guild = _guild(interaction)
-    if not interaction.user.guild_permissions.manage_guild and not interaction.user.guild_permissions.administrator:
+    permissions = getattr(interaction.user, "guild_permissions", None)
+    if permissions is None or not (permissions.manage_guild or permissions.administrator):
         await interaction.response.send_message("You need **Manage Server** to change the showcase background.", ephemeral=True)
         return
     if image is not None and url:
         await interaction.response.send_message("Choose an upload or a URL, not both.", ephemeral=True)
         return
+    # Downloading and validating the image can exceed Discord's 3-second reply window.
+    await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        settings = _settings(guild)
         if image is None and not url:
-            settings.pop("background_path", None)
-            data = _read_settings()
-            data[str(guild.id)] = settings
-            _write_settings(data)
-            await interaction.response.send_message("The default showcase background was cleared.", ephemeral=True)
+            _save_guild_settings(guild, background_path=None)
+            await interaction.followup.send("The default showcase background was cleared.", ephemeral=True)
             return
-        data = await _attachment_bytes(image) if image is not None else _url_bytes(url.strip())
-        _open_image(data)
+        if image is not None:
+            data = await _attachment_bytes(image)
+        else:
+            url = url.strip()
+            if not url.lower().startswith("https://"):
+                raise ValueError("The background URL must start with https://.")
+            data = await asyncio.to_thread(_url_bytes, url)
+        await asyncio.to_thread(_open_image, data)
         directory = Path(ASSETS_DIR) / "showcase"
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"background-{guild.id}.png"
         path.write_bytes(data)
-        settings["background_path"] = str(path)
-        data = _read_settings()
-        data[str(guild.id)] = settings
-        _write_settings(data)
-    except (OSError, UnicodeError, ValueError, RuntimeError, urllib.error.URLError) as error:
+        _save_guild_settings(guild, background_path=str(path))
+    except (*IMAGE_ERRORS, UnicodeError, urllib.error.URLError) as error:
         LOG.warning("Could not save showcase background: %s", error)
-        await interaction.response.send_message(f"I couldn't save that background: {error}", ephemeral=True)
+        await interaction.followup.send(f"I couldn't save that background: {error}", ephemeral=True)
         return
-    await interaction.response.send_message("The default clothing showcase background was updated.", ephemeral=True)
+    await interaction.followup.send("The default clothing showcase background was updated.", ephemeral=True)
 
 
-showcase_group = app_commands.Group(name="showcase", description="Create showcase images")
+# Discord ignores guild_only/default_permissions on subcommands, so they are set on the top-level group.
+showcase_group = app_commands.Group(name="showcase", description="Create showcase images", guild_only=True)
 showcase_group.add_command(clothing_group)
 showcase_group.add_command(showcase_background)
 
