@@ -132,7 +132,7 @@ def _draw_image(draw, canvas, image, box):
 
 
 def _title_layer(text: str, size: int):
-    """Bold, slanted white title with a soft shadow, like the ILE logo lettering."""
+    """Bold, slanted white title with a soft shadow."""
     font = _font(size, bold=True)
     probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
     box = probe.textbbox((0, 0), text, font=font, stroke_width=3)
@@ -158,13 +158,6 @@ def _paste_title(canvas, text: str, top: int, size: int):
     return top + layer.height
 
 
-def _logo_layer(height: int):
-    path = Path(ASSETS_DIR) / "showcase" / "logo.png" if ASSETS_DIR else None
-    if path is not None and path.exists():
-        logo = Image.open(path).convert("RGBA")
-        return ImageOps.contain(logo, (height * 4, height))
-    return _title_layer("ILE", height)
-
 
 def _compose_pairs(pairs: list[tuple], orientation: str, title: str, background):
     width, height = LANDSCAPE_SIZE if orientation == "landscape" else PORTRAIT_SIZE
@@ -177,7 +170,6 @@ def _compose_pairs(pairs: list[tuple], orientation: str, title: str, background)
     single = len(pairs) == 1
     landscape = orientation == "landscape"
     content_top = margin
-    # A single landscape layout has no title; the logo sits between the two templates.
     if title.strip() and not (single and landscape):
         content_top = _paste_title(canvas, title.strip()[:50], 22, 64 if landscape else 72) + 4
 
@@ -187,8 +179,6 @@ def _compose_pairs(pairs: list[tuple], orientation: str, title: str, background)
             half = (width - 2 * margin - GAP) // 2
             _draw_image(draw, canvas, shirt, (margin, margin, margin + half, height - margin))
             _draw_image(draw, canvas, pants, (margin + half + GAP, margin, width - margin, height - margin))
-            logo = _logo_layer(110)
-            canvas.alpha_composite(logo, ((width - logo.width) // 2, height - margin - logo.height - 20))
         else:
             box_height = (height - content_top - margin - GAP) // 2
             _draw_image(draw, canvas, shirt, (margin, content_top, width - margin, content_top + box_height))
@@ -291,9 +281,9 @@ async def showcase_full(
         guild = _guild(interaction)
         uploads = [await _attachment_bytes(item) for item in (shirt1, pants1, shirt2, pants2, shirt3, pants3)]
         background = await _background_bytes(guild)
-        buffer = await asyncio.to_thread(_render_showcase, uploads, _layout_value(type), "ILE PACKAGES", background)
+        buffer = await asyncio.to_thread(_render_showcase, uploads, _layout_value(type), "", background)
         await interaction.followup.send(
-            content=f"**ILE PACKAGES** — {_layout_name(type)} layout",
+            content=f"{_layout_name(type)} layout",
             file=discord.File(buffer, filename="clothing-showcase.png"),
         )
     except IMAGE_ERRORS as error:
