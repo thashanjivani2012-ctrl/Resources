@@ -143,21 +143,21 @@ def _background_canvas(background, size: tuple[int, int]):
     return ImageOps.fit(background, size, method=Image.LANCZOS).convert("RGBA")
 
 
-OUTLINE = 4
-GAP = 28
+OUTLINE = 3
+GAP = 24
+CARD = (24, 32, 48, 255)
+CARD_BORDER = (71, 85, 105, 255)
+ACCENTS = ((34, 211, 238, 255), (167, 139, 250, 255))
 
 
-def _draw_image(draw, canvas, image, box):
-    """Place a template in box with a white outline that hugs its opaque pixels."""
+def _draw_image(draw, canvas, image, box, index: int):
+    """Place a template in a dark card with a small original accent marker."""
     left, top, right, bottom = box
-    pad = OUTLINE + 2
-    fitted, position = _fit(image, (left + pad, top + pad, right - pad, bottom - pad))
-    padded = Image.new("RGBA", (fitted.width + OUTLINE * 2, fitted.height + OUTLINE * 2), (0, 0, 0, 0))
-    padded.paste(fitted, (OUTLINE, OUTLINE))
-    halo = padded.getchannel("A").filter(ImageFilter.MaxFilter(OUTLINE * 2 + 1))
-    outline = Image.new("RGBA", padded.size, (255, 255, 255, 255))
-    outline.putalpha(halo)
-    canvas.alpha_composite(outline, (position[0] - OUTLINE, position[1] - OUTLINE))
+    radius = 18
+    draw.rounded_rectangle(box, radius=radius, fill=CARD, outline=CARD_BORDER, width=2)
+    marker = ACCENTS[index % len(ACCENTS)]
+    draw.rounded_rectangle((left + 14, top + 14, left + 22, bottom - 14), radius=4, fill=marker)
+    fitted, position = _fit(image, (left + 32, top + 18, right - 18, bottom - 18))
     canvas.alpha_composite(fitted, position)
 
 
@@ -191,28 +191,29 @@ def _paste_title(canvas, text: str, top: int, size: int):
 
 def _compose_pairs(pairs: list[tuple], orientation: str, title: str, background):
     width, height = LANDSCAPE_SIZE if orientation == "landscape" else PORTRAIT_SIZE
-    canvas = Image.new("RGBA", (width, height), (245, 203, 218, 255))
+    canvas = Image.new("RGBA", (width, height), (15, 23, 42, 255))
     if background is not None:
         canvas = _background_canvas(background, (width, height))
     draw = ImageDraw.Draw(canvas)
+    draw.rounded_rectangle((18, 18, width - 18, height - 18), radius=28, outline=(51, 65, 85, 255), width=2)
 
     margin = 40
     single = len(pairs) == 1
     landscape = orientation == "landscape"
     content_top = margin
-    if title.strip() and not (single and landscape):
-        content_top = _paste_title(canvas, title.strip()[:50], 22, 64 if landscape else 72) + 4
+    # Titles are intentionally omitted to keep the layout neutral and original.
+    content_top = margin
 
     if single:
         shirt, pants = pairs[0]
         if landscape:
             half = (width - 2 * margin - GAP) // 2
-            _draw_image(draw, canvas, shirt, (margin, margin, margin + half, height - margin))
-            _draw_image(draw, canvas, pants, (margin + half + GAP, margin, width - margin, height - margin))
+            _draw_image(draw, canvas, shirt, (margin, margin, margin + half, height - margin), 0)
+            _draw_image(draw, canvas, pants, (margin + half + GAP, margin, width - margin, height - margin), 1)
         else:
             box_height = (height - content_top - margin - GAP) // 2
-            _draw_image(draw, canvas, shirt, (margin, content_top, width - margin, content_top + box_height))
-            _draw_image(draw, canvas, pants, (margin, content_top + box_height + GAP, width - margin, height - margin))
+            _draw_image(draw, canvas, shirt, (margin, content_top, width - margin, content_top + box_height), 0)
+            _draw_image(draw, canvas, pants, (margin, content_top + box_height + GAP, width - margin, height - margin), 1)
         return canvas
 
     if landscape:
@@ -221,15 +222,15 @@ def _compose_pairs(pairs: list[tuple], orientation: str, title: str, background)
         box_height = (height - content_top - margin - GAP) // 2
         for index, (shirt, pants) in enumerate(pairs):
             x = margin + index * (box_width + GAP)
-            _draw_image(draw, canvas, shirt, (x, content_top, x + box_width, content_top + box_height))
-            _draw_image(draw, canvas, pants, (x, content_top + box_height + GAP, x + box_width, height - margin))
+            _draw_image(draw, canvas, shirt, (x, content_top, x + box_width, content_top + box_height), index * 2)
+            _draw_image(draw, canvas, pants, (x, content_top + box_height + GAP, x + box_width, height - margin), index * 2 + 1)
     else:
         box_height = (height - content_top - margin - GAP * (len(pairs) - 1)) // len(pairs)
         half = (width - 2 * margin - GAP) // 2
         for index, (shirt, pants) in enumerate(pairs):
             y = content_top + index * (box_height + GAP)
-            _draw_image(draw, canvas, shirt, (margin, y, margin + half, y + box_height))
-            _draw_image(draw, canvas, pants, (margin + half + GAP, y, width - margin, y + box_height))
+            _draw_image(draw, canvas, shirt, (margin, y, margin + half, y + box_height), index * 2)
+            _draw_image(draw, canvas, pants, (margin + half + GAP, y, width - margin, y + box_height), index * 2 + 1)
     return canvas
 
 
