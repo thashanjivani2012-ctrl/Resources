@@ -316,50 +316,102 @@ async def showcase_single(
         await interaction.followup.send(f"I couldn't create the showcase: {error}", ephemeral=True)
 
 
-@app_commands.command(name="background", description="Set or clear the default clothing showcase background")
-@app_commands.describe(image="Upload a background image", url="HTTPS image URL, or leave both blank to clear it")
-@app_commands.default_permissions(manage_guild=True)
-@app_commands.guild_only()
-async def showcase_background(
+background_group = app_commands.Group(
+    name="background",
+    description="Manage the default showcase background",
+    default_permissions=discord.Permissions(manage_guild=True),
+    guild_only=True,
+)
+
+
+def _can_manage(interaction: discord.Interaction) -> bool:
+    perms = interaction.user.guild_permissions
+    return perms.manage_guild or perms.administrator
+
+
+def _background_file(guild: discord.Guild) -> Optional[Path]:
+    saved = _settings(guild).get("background_path")
+    path = Path(saved) if saved else None
+    return path if path is not None and path.exists() else None
+
+
+def _forget_background(guild: discord.Guild):
+    settings = _settings(guild)
+    saved = settings.pop("background_path", None)
+    data = _read_settings()
+    data[str(guild.id)] = settings
+    _write_settings(data)
+    if saved:
+        try:
+            Path(saved).unlink(missing_ok=True)
+        except OSError as error:
+            LOG.warning("Could not delete background file %s: %s", saved, error)
+
+
+@background_group.command(name="set", description="Set a new default background (replaces the current one)")
+@app_commands.describe(image="Upload a background image", url="HTTPS image URL")
+async def background_set(
     interaction: discord.Interaction,
     image: Optional[discord.Attachment] = None,
     url: Optional[str] = None,
 ):
     guild = _guild(interaction)
-    if not interaction.user.guild_permissions.manage_guild and not interaction.user.guild_permissions.administrator:
+    if not _can_manage(interaction):
         await interaction.response.send_message("You need **Manage Server** to change the showcase background.", ephemeral=True)
         return
-    if image is not None and url:
-        await interaction.response.send_message("Choose an upload or a URL, not both.", ephemeral=True)
+    if (image is None) == (not url):
+        await interaction.response.send_message("Provide either an image upload or a URL.", ephemeral=True)
         return
+    await interaction.response.defer(ephemeral=True)
     try:
-        settings = _settings(guild)
-        if image is None and not url:
-            settings.pop("background_path", None)
-            data = _read_settings()
-            data[str(guild.id)] = settings
-            _write_settings(data)
-            await interaction.response.send_message("The default showcase background was cleared.", ephemeral=True)
-            return
         data = await _attachment_bytes(image) if image is not None else _url_bytes(url.strip())
         _open_image(data)
-        directory = Path(ASSETS_DIR) / "showcase"
+        directory = SETTINGS_FILE.parent / "showcase-backgrounds"
         directory.mkdir(parents=True, exist_ok=True)
         path = directory / f"background-{guild.id}.png"
         path.write_bytes(data)
+        settings = _settings(guild)
         settings["background_path"] = str(path)
-        data = _read_settings()
-        data[str(guild.id)] = settings
-        _write_settings(data)
+        all_settings = _read_settings()
+        all_settings[str(guild.id)] = settings
+        _write_settings(all_settings)
     except (OSError, UnicodeError, ValueError, RuntimeError, urllib.error.URLError) as error:
         LOG.warning("Could not save showcase background: %s", error)
-        await interaction.response.send_message(f"I couldn't save that background: {error}", ephemeral=True)
+        await interaction.followup.send(f"I couldn't save that background: {error}", ephemeral=True)
         return
-    await interaction.response.send_message("The default clothing showcase background was updated.", ephemeral=True)
+    await interaction.followup.send("The default showcase background was updated.", ephemeral=True)
+
+
+@background_group.command(name="delete", description="Delete the default background")
+async def background_delete(interaction: discord.Interaction):
+    guild = _guild(interaction)
+    if not _can_manage(interaction):
+        await interaction.response.send_message("You need **Manage Server** to change the showcase background.", ephemeral=True)
+        return
+    if _background_file(guild) is None and not _settings(guild).get("background_path"):
+        await interaction.response.send_message("There is no default background set.", ephemeral=True)
+        return
+    _forget_background(guild)
+    await interaction.response.send_message("The default showcase background was deleted.", ephemeral=True)
+
+
+@background_group.command(name="download", description="Download the current default background")
+async def background_download(interaction: discord.Interaction):
+    guild = _guild(interaction)
+    if not _can_manage(interaction):
+        await interaction.response.send_message("You need **Manage Server** to download the showcase background.", ephemeral=True)
+        return
+    path = _background_file(guild)
+    if path is None:
+        await interaction.response.send_message("There is no default background set.", ephemeral=True)
+        return
+    await interaction.response.send_message(
+        "Current default background:", file=discord.File(str(path), filename="showcase-background.png"), ephemeral=True
+    )
 
 
 showcase_group = app_commands.Group(name="showcase", description="Create showcase images")
 showcase_group.add_command(clothing_group)
-showcase_group.add_command(showcase_background)
+showcase_group.add_command(background_group)
 
 COMMANDS = [showcase_group]
