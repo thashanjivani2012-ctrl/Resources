@@ -178,8 +178,8 @@ def _compose_pairs(pairs: list[tuple], orientation: str, title: str, background)
     landscape = orientation == "landscape"
     content_top = margin
     # A single landscape layout has no title; the logo sits between the two templates.
-    if not (single and landscape):
-        content_top = _paste_title(canvas, title.strip()[:50] or "CLOTHING SHOWCASE", 22, 64 if landscape else 72) + 4
+    if title.strip() and not (single and landscape):
+        content_top = _paste_title(canvas, title.strip()[:50], 22, 64 if landscape else 72) + 4
 
     if single:
         shirt, pants = pairs[0]
@@ -323,9 +323,9 @@ async def showcase_single(
         guild = _guild(interaction)
         uploads = [await _attachment_bytes(item) for item in (shirt, pants)]
         background = await _background_bytes(guild)
-        buffer = await asyncio.to_thread(_render_showcase, uploads, _layout_value(type), "ILE CUSTOMS", background)
+        buffer = await asyncio.to_thread(_render_showcase, uploads, _layout_value(type), "", background)
         await interaction.followup.send(
-            content=f"**ILE CUSTOMS** — {_layout_name(type)} layout",
+            content=f"{_layout_name(type)} layout",
             file=discord.File(buffer, filename="clothing-showcase.png"),
         )
     except IMAGE_ERRORS as error:
