@@ -60,7 +60,9 @@ def _write_settings(data: dict):
     if SETTINGS_FILE is None:
         raise RuntimeError("Showcase settings are not configured.")
     SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    temporary = SETTINGS_FILE.with_suffix(f"{SETTINGS_FILE.suffix}.tmp")
+    temporary.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    temporary.replace(SETTINGS_FILE)
 
 
 def _settings(guild: discord.Guild) -> dict:
@@ -284,8 +286,8 @@ def _layout_name(choice: Optional[app_commands.Choice[str]]) -> str:
     shirt1="First shirt template image",
     pants1="First pant option image",
     shirt2="Second shirt template image",
-    shirt3="Third shirt template image",
     pants2="Second pant option image",
+    shirt3="Third shirt template image",
     pants3="Third pant option image",
     type="Layout type. Defaults to portrait.",
 )
@@ -299,8 +301,8 @@ async def showcase_full(
     shirt1: discord.Attachment,
     pants1: discord.Attachment,
     shirt2: discord.Attachment,
-    shirt3: discord.Attachment,
     pants2: discord.Attachment,
+    shirt3: discord.Attachment,
     pants3: discord.Attachment,
     type: Optional[app_commands.Choice[str]] = None,
 ):
@@ -315,8 +317,8 @@ async def showcase_full(
             content=f"{_layout_name(type)} layout",
             file=discord.File(buffer, filename="clothing-showcase.png"),
         )
-    except IMAGE_ERRORS as error:
-        LOG.warning("Showcase composition failed: %s", error)
+    except IMAGE_ERRORS:
+        LOG.exception("Showcase composition failed")
         await interaction.followup.send("I couldn't create the showcase. Please use valid images under 12 MB and try again.")
 
 
@@ -348,8 +350,8 @@ async def showcase_single(
             content=f"{_layout_name(type)} layout",
             file=discord.File(buffer, filename="clothing-showcase.png"),
         )
-    except IMAGE_ERRORS as error:
-        LOG.warning("Single showcase composition failed: %s", error)
+    except IMAGE_ERRORS:
+        LOG.exception("Single showcase composition failed")
         await interaction.followup.send("I couldn't create the showcase. Please use valid images under 12 MB and try again.")
 
 
@@ -390,8 +392,8 @@ async def showcase_background(
         path = directory / f"background-{guild.id}.png"
         path.write_bytes(data)
         _save_guild_settings(guild, background_path=str(path))
-    except (OSError, ValueError, RuntimeError, UnicodeError, urllib.error.URLError) as error:
-        LOG.warning("Could not save showcase background: %s", error)
+    except (OSError, ValueError, RuntimeError, UnicodeError, urllib.error.URLError):
+        LOG.exception("Could not save showcase background")
         await interaction.followup.send("I couldn't save that background. Use a valid image under 12 MB and try again.", ephemeral=True)
         return
     await interaction.followup.send("The default clothing showcase background was updated.", ephemeral=True)
