@@ -14,8 +14,8 @@ py -m venv .venv
 .\.venv\Scripts\python.exe run.py
 ```
 
-Put the Discord bot token in `.env` as `DISCORD_TOKEN`. Do not share that file.
-Upload this entire folder (including `bot.py`, `clothing_showcase.py`, and
+Put the Discord bot token in your hosting provider's private environment variables as `DISCORD_TOKEN`. Keep `.env` local and never commit or upload it.
+Upload the source files (including `bot.py`, `clothing_showcase.py`, and
 `assets`) to your hosting service. Set the host startup command to
 `python run.py` or `py run.py`.
 
