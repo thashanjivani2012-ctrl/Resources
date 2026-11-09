@@ -53,10 +53,13 @@ bot = ShowcaseBot()
 async def on_app_command_error(interaction: discord.Interaction, error: app_commands.AppCommandError):
     LOG.exception("Slash command failed", exc_info=error)
     message = "The showcase command failed. Check the bot host logs for details."
-    if interaction.response.is_done():
-        await interaction.followup.send(message, ephemeral=True)
-    else:
-        await interaction.response.send_message(message, ephemeral=True)
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+    except discord.HTTPException:
+        LOG.warning("Could not report the command error; the interaction has expired.")
 
 
 if __name__ == "__main__":
