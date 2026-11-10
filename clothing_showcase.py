@@ -145,9 +145,9 @@ def _background_canvas(background, size: tuple[int, int]):
 
 OUTLINE = 3
 GAP = 24
-CARD = (24, 32, 48, 255)
-CARD_BORDER = (71, 85, 105, 255)
-ACCENTS = ((34, 211, 238, 255), (167, 139, 250, 255))
+CARD = (248, 246, 240, 255)
+CARD_BORDER = (30, 41, 59, 255)
+ACCENTS = ((13, 148, 136, 255), (234, 88, 12, 255))
 
 
 def _draw_image(draw, canvas, image, box, index: int):
@@ -191,7 +191,7 @@ def _paste_title(canvas, text: str, top: int, size: int):
 
 def _compose_pairs(pairs: list[tuple], orientation: str, title: str, background):
     width, height = LANDSCAPE_SIZE if orientation == "landscape" else PORTRAIT_SIZE
-    canvas = Image.new("RGBA", (width, height), (15, 23, 42, 255))
+    canvas = Image.new("RGBA", (width, height), (238, 231, 220, 255))
     if background is not None:
         canvas = _background_canvas(background, (width, height))
     draw = ImageDraw.Draw(canvas)
